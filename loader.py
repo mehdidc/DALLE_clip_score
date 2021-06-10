@@ -6,6 +6,7 @@ import PIL
 
 from torch.utils.data import Dataset
 from torchvision import transforms as T
+import torch
 
 
 class TextImageDataset(Dataset):
@@ -79,20 +80,28 @@ class TextImageDataset(Dataset):
         image_file = self.image_files[key]
 
         descriptions = text_file.read_text().split('\n')
-        descriptions = list(filter(lambda t: len(t) > 0, descriptions))
-        try:
-            description = self.rng.choice(descriptions)
-            # description = descriptions[0]
-        except IndexError as zero_captions_in_file_ex:
-            print(f"An exception occurred trying to load file {text_file}.")
-            print(f"Skipping index {ind}")
-            return self.skip_sample(ind)
+        # descriptions = list(filter(lambda t: len(t) > 0, descriptions))
+        # try:
+            # description = self.rng.choice(descriptions)
+            # # description = descriptions[0]
+        # except IndexError as zero_captions_in_file_ex:
+            # print(f"An exception occurred trying to load file {text_file}.")
+            # print(f"Skipping index {ind}")
+            # return self.skip_sample(ind)
         # print('x',description,'x')
-        tokenized_text = self.tokenizer.tokenize(
-            description,
-            self.text_len,
-            truncate_text=self.truncate_captions
-        ).squeeze(0)
+        # tokenized_text = self.tokenizer.tokenize(
+            # description,
+            # self.text_len,
+            # truncate_text=self.truncate_captions
+        # ).squeeze(0)
+        tokenized_text = torch.cat([
+            self.tokenizer.tokenize(
+                description,
+                self.text_len,
+                truncate_text=self.truncate_captions
+            )
+            for description in descriptions
+        ])
         try:
             image_tensor = self.image_transform(PIL.Image.open(image_file))
         except (PIL.UnidentifiedImageError, OSError) as corrupt_image_exceptions:
@@ -101,4 +110,4 @@ class TextImageDataset(Dataset):
             return self.skip_sample(ind)
 
         # Success
-        return tokenized_text, description, image_tensor
+        return tokenized_text, descriptions, image_tensor

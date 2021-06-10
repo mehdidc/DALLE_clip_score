@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python -u
 # Author: Mehdi Cherti
 # Thanks to @lucidrains for the DALL-E PyTorch repo <https://github.com/lucidrains/DALLE-pytorch>
 # this code is based on <https://github.com/lucidrains/DALLE-pytorch/blob/main/generate.py>
@@ -211,32 +211,17 @@ for i in inds:
         outputs = torch.nn.functional.interpolate(outputs, size=(224, 224), mode='bicubic')
         outputs = torch.cat((image, outputs), dim=0)
         outputs = (outputs - clip_mean) / clip_std
-    clip_text = clip.tokenize([text_str]).to(device)
-    # print(outputs.shape, outputs.mean(), outputs.min(), outputs.max(), clip_text.sum())
-    #
-    # debug = False
-    # if debug:
-        # from PIL import Image
-        # outputs_dir = Path(args.outputs_dir) / text_str.replace(' ', '_')[:(100)]
-        # outputs_dir.mkdir(parents = True, exist_ok = True)
-        # ims = []
-        # for i, image in enumerate(outputs):
-            # path = outputs_dir / f'{i}.jpg'
-            # save_image(image, path, normalize=True)
-            # image = clip_preprocess(Image.open(path)).unsqueeze(0)
-            # ims.append(image)
-        # outputs = torch.cat(ims).to(device)
-    #
+    clip_text = clip.tokenize(text_str).to(device)
     with torch.no_grad():
         logits_per_image, logits_per_text = clip_model(outputs, clip_text)
-    real_clip_score = logits_per_image[0,0].item()
-    fake_clip_scores = logits_per_image[1:,0].data.cpu().numpy()
+    real_clip_score = logits_per_image[0,:].cpu().numpy().mean()
+    fake_clip_scores = logits_per_image[1:,:].data.cpu().numpy().mean(axis=1)
     if args.dump:
         real = outputs[0]
         fakes = outputs[1:]
         order = np.argsort(-fake_clip_scores)
         fakes = fakes[order]
-        outputs_dir = Path(args.outputs_dir) / text_str.replace(' ', '_')[:(100)]
+        outputs_dir = Path(args.outputs_dir) / text_str[0].replace(' ', '_')[:(100)]
         outputs_dir.mkdir(parents = True, exist_ok = True)
         save_image(real, outputs_dir / f'true.jpg', normalize=True)
         for i, image in enumerate(fakes):
