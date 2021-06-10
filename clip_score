@@ -1,8 +1,9 @@
 #!/usr/bin/env python
+import json
 import argparse
 from pathlib import Path
 from tqdm import tqdm
-
+import numpy as np
 # torch
 
 import torch
@@ -14,12 +15,33 @@ from einops import repeat
 from PIL import Image
 from torchvision.utils import make_grid, save_image
 
+# clip
+import clip
+
 # dalle related classes and utils
 
 from dalle_pytorch import DiscreteVAE, OpenAIDiscreteVAE, VQGanVAE1024, DALLE
 from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, YttmTokenizer, ChineseTokenizer
 from dalle_pytorch.loader import TextImageDataset
 
+CLIP_THRESH = 30
+
+def CLIP_thresh(real, fakes, th=CLIP_THRESH):
+    return np.any(fakes > th, axis=1).mean()
+
+def CLIP_score_mean(real, fakes):
+    return fakes.mean()
+
+def CLIP_score_max(real, fakes):
+    return fakes.max(axis=1).mean()
+
+def CLIP_score_relative_mean(real, fakes):
+    return (fakes.mean(axis=1) / real).mean()
+
+def CLIP_score_relative_max(real, fakes):
+    return (fakes.max(axis=1) / real).mean()
+
+metrics = [CLIP_score_mean, CLIP_score_max, CLIP_score_relative_mean, CLIP_score_relative_max, CLIP_thresh]
 # argument parsing
 
 parser = argparse.ArgumentParser()
@@ -27,10 +49,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--dalle_path', type = str, required = True,
                     help='path to your trained DALL-E')
 
+parser.add_argument('--out_file', type = str, required =False, default='clip_score.json',
+                    help='Output file')
+
 parser.add_argument('--image_text_folder', type=str, required=True,
                     help='path to your folder of images and text for learning the DALL-E')
 
 parser.add_argument('--num_images', type = int, default = 128, required = False,
+                    help='number of images')
+
+parser.add_argument('--nb_examples', type = int, default = None, required = False,
                     help='number of images')
 
 parser.add_argument('--batch_size', type = int, default = 4, required = False,
@@ -50,6 +78,10 @@ parser.add_argument('--hug', dest='hug', action = 'store_true')
 parser.add_argument('--chinese', dest='chinese', action = 'store_true')
 
 parser.add_argument('--taming', dest='taming', action='store_true')
+
+parser.add_argument('--horovod', dest='horovod', action='store_true')
+
+parser.add_argument('--dump', dest='dump', action='store_true')
 
 args = parser.parse_args()
 
@@ -72,7 +104,7 @@ dalle_path = Path(args.dalle_path)
 
 assert dalle_path.exists(), 'trained DALL-E must exist'
 
-load_obj = torch.load(str(dalle_path))
+load_obj = torch.load(str(dalle_path), map_location='cpu')
 dalle_params, vae_params, weights = load_obj.pop('hparams'), load_obj.pop('vae_params'), load_obj.pop('weights')
 
 dalle_params.pop('vae', None) # cleanup later
@@ -84,8 +116,9 @@ elif not args.taming:
 else:
     vae = VQGanVAE1024()
 
-
-dalle = DALLE(vae = vae, **dalle_params).cuda()
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print("Using", device)
+dalle = DALLE(vae = vae, **dalle_params).to(device)
 
 dalle.load_state_dict(weights)
 
@@ -96,34 +129,84 @@ image_size = vae.image_size
 ds = TextImageDataset(
     args.image_text_folder,
     text_len=dalle.text_seq_len,
-    image_size=dalle.image_size,
+    image_size=vae.image_size,
     # resize_ratio=args.resize_ratio,
     # truncate_captions=args.truncate_captions,
     tokenizer=tokenizer,
-    # shuffle=is_shuffle,
+    shuffle=False,
 )
 
-
-for i in range(len(ds)):
-    image, text = ds[i]
+clip_mean = torch.Tensor([0.48145466, 0.4578275, 0.40821073]).view(1,3,1,1).to(device)
+clip_std = torch.Tensor([0.26862954, 0.26130258, 0.27577711]).view(1,3,1,1).to(device)
+clip_model, clip_preprocess = clip.load("ViT-B/32", device=device)
+real_scores = []
+fake_scores = []
+if args.horovod:
+    import horovod.torch as hvd
+    hvd.init()
+    print("Using horovod to distribute the score computation")
+    print("Number of workers:", hvd.size())
+    indices = np.arange(len(ds))
+    indices = indices[(indices % hvd.size()) == hvd.rank()]
+    ds = torch.utils.data.Subset(ds, indices)
+    display = hvd.rank() == 0
+else:
+    display = True
+nb_examples = args.nb_examples if args.nb_examples else len(ds)
+for i in (range(nb_examples)):
+    text, image = ds[i]
+    text_str = tokenizer.decode(text)
+    if display:
+        print(i,'/', nb_examples, text_str)
     text = text.view(1, -1)
+    text = text.to(device)
     # text = tokenizer.tokenize([args.text], dalle.text_seq_len).cuda()
     text = repeat(text, '() n -> b n', b = args.num_images)
 
     outputs = []
 
-    for text_chunk in tqdm(text.split(args.batch_size), desc = f'generating images for - {text}'):
+    for text_chunk in text.split(args.batch_size):
         output = dalle.generate_images(text_chunk, filter_thres = args.top_k)
         outputs.append(output)
 
     outputs = torch.cat(outputs)
 
     # save all images
+    if args.dump:
+        outputs_dir = Path(args.outputs_dir) / text_str.replace(' ', '_')[:(100)]
+        outputs_dir.mkdir(parents = True, exist_ok = True)
 
-    outputs_dir = Path(args.outputs_dir) / args.text.replace(' ', '_')[:(100)]
-    outputs_dir.mkdir(parents = True, exist_ok = True)
+        for i, image in enumerate(outputs):
+            save_image(image, outputs_dir / f'{i}.jpg', normalize=True)
 
-    for i, image in tqdm(enumerate(outputs), desc = 'saving images'):
-        save_image(image, outputs_dir / f'{i}.jpg', normalize=True)
+    # compute CLIP score
+    image = image.to(device)
+    image = image.unsqueeze(0)
+    # print(image.min(), image.max(), outputs.min(), outputs.max())
+    outputs = torch.cat((image, outputs), dim=0)
+    outputs = torch.nn.functional.interpolate(outputs, size=(224, 224), mode='bicubic')
+    outputs = (outputs - clip_mean) / clip_std
+    clip_text = clip.tokenize([text_str]).to(device)
+    with torch.no_grad():
+        logits_per_image, logits_per_text = clip_model(outputs, clip_text)
+    real_clip_score = logits_per_image[0,0].item()
+    fake_clip_scores = logits_per_image[1:,0].data.cpu().numpy()
 
-    print(f'created {args.num_images} images at "{str(outputs_dir)}"')
+    real_scores.append(real_clip_score)
+    fake_scores.append(fake_clip_scores)
+    # print(f'created {args.num_images} images at "{str(outputs_dir)}"')
+if args.horovod:
+    hvd.join()
+real_scores = np.array(real_scores)
+fake_scores = np.array(fake_scores)
+results = {}
+for metric in metrics:
+    score = metric(real_scores, fake_scores)
+    if args.horovod:
+        score = hvd.allreduce(torch.Tensor([score])).item()
+    if display:
+        results[metric.__name__] = score
+        print(metric.__name__, score)
+if display:
+    with open(args.out_file, "w") as fd:
+        json.dump(results, fd)
