@@ -31,8 +31,18 @@ from loader import TextImageDataset
 
 CLIP_THRESH_DEFAULT = 25
 
-# shape for real:  (1, 1, caption id text)
-# shape for fakes: (generated image id for each caption, caption id generated, caption id text)
+# shape for real:  (1, 1, nb_captions)
+# shape for fakes: (num_generate, nb_captions, nb_captions)
+# == explanation ==
+# - for each real image, we have different captions `nb_captions`
+# - for each caption, we generate a number of images `num_generate`
+# - for each generated image' and caption, we compute CLIP score
+# - in the shape of fakes, second dim is the generated image of a caption i, and third dim is a caption j. So we also compute CLIP score across captions (e.g., CLIP score for generated image of caption i with caption j)
+# - shape of real is reshape to have the same dims as shape of fakes, so that we can compute the metrics
+# In summary:
+# - fakes[k,i,j] means the CLIP score of generated image of caption i with caption j, the k-th attempt (each of the k is an independent sample)
+# - real[:,:,j] means the CLIp score of the real image with caption j
+
 def CLIP_score_real(real, fakes):
     return real.mean()
 
