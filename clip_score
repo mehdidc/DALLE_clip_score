@@ -2,7 +2,7 @@
 # Author: Mehdi Cherti
 # Thanks to @lucidrains for the DALL-E PyTorch repo <https://github.com/lucidrains/DALLE-pytorch>
 # this code is based on <https://github.com/lucidrains/DALLE-pytorch/blob/main/generate.py>
-
+import joblib
 import json
 import argparse
 from pathlib import Path
@@ -31,25 +31,27 @@ from loader import TextImageDataset
 
 CLIP_THRESH_DEFAULT = 25
 
+# shape for real:  (1, 1, caption id text)
+# shape for fakes: (generated image id for each caption, caption id generated, caption id text)
 def CLIP_score_real(real, fakes):
     return real.mean()
 
 def CLIP_atleast(real, fakes, th=CLIP_THRESH_DEFAULT):
     if args.clip_thresh:
         th = args.clip_thresh
-    return np.any(fakes > th, axis=1).mean()
+    return np.any(fakes > th, axis=0).mean()
 
 def CLIP_score(real, fakes):
     return fakes.mean()
 
 def CLIP_score_top1(real, fakes):
-    return fakes.max(axis=1).mean()
+    return fakes.max(axis=0).mean()
 
 def CLIP_score_relative(real, fakes):
-    return (fakes.mean(axis=1) / real).mean()
+    return (fakes.mean(axis=0, keepdims=True) / real).mean()
 
 def CLIP_score_relative_top1(real, fakes):
-    return (fakes.max(axis=1) / real).mean()
+    return (fakes.max(axis=0, keepdims=True) / real).mean()
 
 metrics = [
     CLIP_score_real, 
@@ -199,14 +201,16 @@ for i in inds:
         text = text[order]
         clip_text = clip_text[order]
         text_str = [text_str[ind] for ind in order]
+    nb_captions = len(text_str)
     # text_str = tokenizer.decode(text)
     # print('x',text_str, 'x')
     # if display:
         # print(i,'/', nb_examples, text_str, time.time() - t0)
-    # text = text.view(1, -1)
     text = text.to(device)
     # text = tokenizer.tokenize([args.text], dalle.text_seq_len).cuda()
     # text = repeat(text, '() n -> b n', b = args.num_generate)
+
+    # num_generate * nb_captions, text_seq_len
     text = text.repeat(args.num_generate, 1)
 
     outputs = []
@@ -215,36 +219,34 @@ for i in inds:
         output = dalle.generate_images(text_chunk, filter_thres = args.top_k)
         outputs.append(output)
     # generated images
+    # num_generate * nb_captions, c, h, w
     outputs = torch.cat(outputs)
-    # if display:
-        # print(len(text_str), text_str, text.shape, outputs.shape)
-    # real image
-    # go back to 0..1 for real image (because it uses CLIP preprocessor)
-    image = (image * clip_std) + clip_mean
-    
     # put real and generated images in `outputs`
     with torch.no_grad():
         outputs = torch.nn.functional.interpolate(outputs, size=(224, 224), mode='bicubic')
-        outputs = torch.cat((image, outputs), dim=0)
         outputs = (outputs - clip_mean) / clip_std
+        outputs = torch.cat((image, outputs), dim=0)
     with torch.no_grad():
         logits_per_image, logits_per_text = clip_model(outputs, clip_text)
     # if display:
         # print(logits_per_image.shape)
-    real_clip_score = logits_per_image[0,:].cpu().numpy().mean()
-    fake_clip_scores = logits_per_image[1:,:].data.cpu().numpy().mean(axis=1)
-    if args.dump:
 
+    # (1, 1, nb_captions)
+    real_clip_score = logits_per_image[0:1,:].cpu().numpy().reshape((1, 1, nb_captions))
+    fake_clip_scores = logits_per_image[1:,:].data.cpu().numpy()
+    # (num_generate, nb_captions, nb_captions)
+    # first dim: nb of images generated for each caption
+    # second dim: image
+    # third dim: text
+    fake_clip_scores = fake_clip_scores.reshape((args.num_generate, nb_captions, nb_captions))
+    if args.dump:
         real = outputs[0]
-        fakes = outputs[1:]
-        inds = np.arange(len(fake_clip_scores))
+        fakes = outputs[1:].view(args.num_generate, nb_captions, outputs.size(1), outputs.size(2), outputs.size(3))
         for ind, text_str_cur in enumerate(text_str):
-            inds_cur = inds.reshape((args.num_generate, -1))
-            inds_cur = inds_cur[:, ind]
-            fake_clip_scores_cur = fake_clip_scores[inds_cur]
+            real_clip_score_cur = real_clip_score[:, :, ind]
+            fake_clip_scores_cur = fake_clip_scores[:, ind, ind]
             order = np.argsort(-fake_clip_scores_cur)
-            fakes_cur = fakes[inds_cur]
-            fakes_cur = fakes_cur[order]
+            fakes_cur = fakes[order, ind]
             outputs_dir = Path(args.outputs_dir) / text_str_cur.replace(' ', '_')[:(100)]
             outputs_dir.mkdir(parents = True, exist_ok = True)
             save_image(real, outputs_dir / f'true.jpg', normalize=True)
@@ -252,7 +254,7 @@ for i in inds:
                 save_image(image, outputs_dir / f'{i}.jpg', normalize=True)
             results = {}
             for metric in metrics:
-                score = metric(np.array([real_clip_score]), np.array([fake_clip_scores]))
+                score = metric(real_clip_score_cur, fake_clip_scores_cur)
                 score = float(score)
                 results[metric.__name__] = score
             with open(outputs_dir / 'metrics.json', "w") as fd:
@@ -265,7 +267,7 @@ real_scores = np.array(real_scores)
 fake_scores = np.array(fake_scores)
 results = {}
 for metric in metrics:
-    score = metric(real_scores, fake_scores)
+    score = float(np.mean([metric(r, f) for r, f in zip(real_scores, fake_scores)]))
     if args.horovod:
         score = hvd.allreduce(torch.Tensor([score])).item()
     score = float(score)
@@ -285,3 +287,4 @@ if display:
     }
     with open(args.out_file, "w") as fd:
         json.dump(dump, fd)
+    joblib.dump({'real_scores': real_scores, 'fake_scores': fake_scores}, args.out_file+'.pkl') 
