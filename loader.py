@@ -80,7 +80,7 @@ class TextImageDataset(Dataset):
         image_file = self.image_files[key]
 
         descriptions = text_file.read_text().split('\n')
-        # descriptions = list(filter(lambda t: len(t) > 0, descriptions))
+        descriptions = list(filter(lambda t: len(t) > 0, descriptions))
         # try:
             # description = self.rng.choice(descriptions)
             # # description = descriptions[0]

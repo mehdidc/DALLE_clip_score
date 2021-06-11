@@ -81,6 +81,9 @@ parser.add_argument('--clip_thresh', type = float, default = CLIP_THRESH_DEFAULT
 parser.add_argument('--nb_examples', type = int, default = None, required = False,
                     help='number of real images to consider for computing CLIP score (per worker if horovod is used)')
 
+parser.add_argument('--num_captions_per_image', type = int, default = None, required = False,
+                    help='number of captions to retain per real image. if None, ignored. If provided, only select the captions with best CLIP score w.r.t real image')
+
 parser.add_argument('--batch_size', type = int, default = 4, required = False,
                     help='batch size')
 
@@ -184,14 +187,27 @@ if display:
 for i in inds: 
     # clip_model, clip_preprocess = clip.load("ViT-B/32", device=device, jit=False)
     text, text_str, image = ds[i]
+    image = image.to(device)
+    image = image.unsqueeze(0)
+    clip_text = clip.tokenize(text_str).to(device)
+    if args.num_captions_per_image:
+        with torch.no_grad():
+            logits, _ = clip_model(image, clip_text)
+            logits = logits[0]
+            order = torch.argsort(-logits).cpu().numpy()
+        order = order[:args.num_captions_per_image]
+        text = text[order]
+        clip_text = clip_text[order]
+        text_str = [text_str[ind] for ind in order]
     # text_str = tokenizer.decode(text)
     # print('x',text_str, 'x')
     # if display:
         # print(i,'/', nb_examples, text_str, time.time() - t0)
-    text = text.view(1, -1)
+    # text = text.view(1, -1)
     text = text.to(device)
     # text = tokenizer.tokenize([args.text], dalle.text_seq_len).cuda()
-    text = repeat(text, '() n -> b n', b = args.num_generate)
+    # text = repeat(text, '() n -> b n', b = args.num_generate)
+    text = text.repeat(args.num_generate, 1)
 
     outputs = []
 
@@ -200,9 +216,9 @@ for i in inds:
         outputs.append(output)
     # generated images
     outputs = torch.cat(outputs)
+    # if display:
+        # print(len(text_str), text_str, text.shape, outputs.shape)
     # real image
-    image = image.to(device)
-    image = image.unsqueeze(0)
     # go back to 0..1 for real image (because it uses CLIP preprocessor)
     image = (image * clip_std) + clip_mean
     
@@ -211,28 +227,36 @@ for i in inds:
         outputs = torch.nn.functional.interpolate(outputs, size=(224, 224), mode='bicubic')
         outputs = torch.cat((image, outputs), dim=0)
         outputs = (outputs - clip_mean) / clip_std
-    clip_text = clip.tokenize(text_str).to(device)
     with torch.no_grad():
         logits_per_image, logits_per_text = clip_model(outputs, clip_text)
+    # if display:
+        # print(logits_per_image.shape)
     real_clip_score = logits_per_image[0,:].cpu().numpy().mean()
     fake_clip_scores = logits_per_image[1:,:].data.cpu().numpy().mean(axis=1)
     if args.dump:
+
         real = outputs[0]
         fakes = outputs[1:]
-        order = np.argsort(-fake_clip_scores)
-        fakes = fakes[order]
-        outputs_dir = Path(args.outputs_dir) / text_str[0].replace(' ', '_')[:(100)]
-        outputs_dir.mkdir(parents = True, exist_ok = True)
-        save_image(real, outputs_dir / f'true.jpg', normalize=True)
-        for i, image in enumerate(fakes):
-            save_image(image, outputs_dir / f'{i}.jpg', normalize=True)
-        results = {}
-        for metric in metrics:
-            score = metric(np.array([real_clip_score]), np.array([fake_clip_scores]))
-            score = float(score)
-            results[metric.__name__] = score
-        with open(outputs_dir / 'metrics.json', "w") as fd:
-            json.dump(results, fd)
+        inds = np.arange(len(fake_clip_scores))
+        for ind, text_str_cur in enumerate(text_str):
+            inds_cur = inds.reshape((args.num_generate, -1))
+            inds_cur = inds_cur[:, ind]
+            fake_clip_scores_cur = fake_clip_scores[inds_cur]
+            order = np.argsort(-fake_clip_scores_cur)
+            fakes_cur = fakes[inds_cur]
+            fakes_cur = fakes_cur[order]
+            outputs_dir = Path(args.outputs_dir) / text_str_cur.replace(' ', '_')[:(100)]
+            outputs_dir.mkdir(parents = True, exist_ok = True)
+            save_image(real, outputs_dir / f'true.jpg', normalize=True)
+            for i, image in enumerate(fakes_cur):
+                save_image(image, outputs_dir / f'{i}.jpg', normalize=True)
+            results = {}
+            for metric in metrics:
+                score = metric(np.array([real_clip_score]), np.array([fake_clip_scores]))
+                score = float(score)
+                results[metric.__name__] = score
+            with open(outputs_dir / 'metrics.json', "w") as fd:
+                json.dump(results, fd)
     real_scores.append(real_clip_score)
     fake_scores.append(fake_clip_scores)
 if args.horovod:
@@ -257,6 +281,7 @@ if display:
         'nb_examples': (nb_examples * hvd.size() if args.horovod else nb_examples),
         'top_k': args.top_k,
         'clip_thresh': args.clip_thresh,
+        'num_captions_per_image': args.num_captions_per_image,
     }
     with open(args.out_file, "w") as fd:
         json.dump(dump, fd)
