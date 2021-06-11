@@ -3,7 +3,8 @@
 Simple script to compute CLIP scores based on a trained DALL-e model, using OpenAI's CLIP <https://github.com/openai/CLIP>.
 CLIP scores measures the compatibility between an image and a caption. The raw value is using cosine similarity, so it is 
 between -1 and 1. In CLIP, the value is scaled by 100 by default, giving a number between -100 and 100, where 100 means
-maximum compatibility between an image and text. Typical values are around 20-30.
+maximum compatibility between an image and text. As mentioned in <https://arxiv.org/abs/2104.14806>, it is rare that the score
+is negative, but we clamp it to have a number between 0 and 100 anyways. Typical values are around 20-30. 
 
 ## How to install ?
 

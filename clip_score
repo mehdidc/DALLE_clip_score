@@ -237,17 +237,17 @@ for i in inds:
         outputs = (outputs - clip_mean) / clip_std
         outputs = torch.cat((image, outputs), dim=0)
     with torch.no_grad():
+        #logits_per_image: num_generate*nb_captions+1,nb_captions
         logits_per_image, logits_per_text = clip_model(outputs, clip_text)
+        logits_per_image.clamp_min_(0)
     # if display:
         # print(logits_per_image.shape)
 
     # (1, 1, nb_captions)
     real_clip_score = logits_per_image[0:1,:].cpu().numpy().reshape((1, 1, nb_captions))
+    # num_generate*nb_captions,nb_captions
     fake_clip_scores = logits_per_image[1:,:].data.cpu().numpy()
     # (num_generate, nb_captions, nb_captions)
-    # first dim: nb of images generated for each caption
-    # second dim: image
-    # third dim: text
     fake_clip_scores = fake_clip_scores.reshape((args.num_generate, nb_captions, nb_captions))
     if args.dump:
         real = outputs[0]
