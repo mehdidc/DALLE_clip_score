@@ -16,7 +16,7 @@ maximum compatibility between an image and text. Typical values are around 20-30
 
 Here is an example:
 
-`clip_score --dalle_path dalle.pt --image_text_folder CUB_200_2011 --taming --num_generate 8 --dump`
+`clip_score --dalle_path dalle.pt --image_text_folder CUB_200_2011 --taming --num_generate 1 --dump`
 
 here:
 
@@ -29,12 +29,12 @@ here:
 Example output:
 
 ```
-CLIP_score_real 28.47281265258789
-CLIP_score 26.4765625
-CLIP_score_top1 29.54296875
-CLIP_score_relative 0.9353748559951782
-CLIP_score_relative_top1 1.043790578842163
-CLIP_atleast 0.9900000095367432
+CLIP_score_real 30.1826171875
+CLIP_score 26.7392578125
+CLIP_score_top1 26.7392578125
+CLIP_score_relative 0.8892822265625
+CLIP_score_relative_top1 0.8892822265625
+CLIP_atleast 0.7466491460800171
 ```
 
 Note that all the metrics will also be saved on `clip_score.json`.
