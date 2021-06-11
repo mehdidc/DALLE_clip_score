@@ -37,12 +37,12 @@ CLIP_score_relative_top1 0.8892822265625
 CLIP_atleast 0.7466491460800171
 ```
 
-Note that all the metrics will also be saved on `clip_score.json`.
-_
+Note that all the metrics will also be saved on `clip_score.json` by default.
+
 - `CLIP_score_real`: average CLIP score for real images
 - `CLIP_score`: average CLIP score for all generated images.
 - `CLIP_score_top1`: for each caption, retain the generated image with best CLIP score, then compute the average CLIP score like in `CLIP_score`.
-- `CLIP_score_relative`: similar to <https://arxiv.org/abs/2104.14806>, we compute CLIP score of the generated image divided by the CLIP score of the real image, then average. In general, between 0 and 1, although it can be bigger than 1. Bigger than 1 means the CLIP score is higher 
+- `CLIP_score_relative`: similar to <https://arxiv.org/abs/2104.14806>, we compute CLIP score of the generated image divided by the CLIP score of the real image, then average. In general, between 0 and 1, although it can be bigger than 1. Bigger than 1 means the CLIP score of the generated image is higher.
 - `CLIP_score_relative_top1`: same as `CLIP_score_relative` but using the top CLIP score like in `CLIP_score_top1`.
 - `CLIP_atleast`: for each caption, it is 1 if CLIP score can reach at least `--clip_thresh` (by default **25**), 0 if not, then we average over all captions. This score gives a number between 0 and 1.
 
