@@ -21,7 +21,7 @@ setup(
                  'Operating System :: Unix',
                  'Operating System :: MacOS'],
     platforms='any',
-    scripts=['joblib'],
+    scripts=['clip_score'],
     include_package_data=True,
     install_requires=['joblib', 'clip@git+https://github.com/openai/CLIP'],
 )
